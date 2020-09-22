@@ -64,6 +64,18 @@ class WsConnectionTestSuite extends WsSuiteBase {
     wscs.foreach(_.close())
   }
 
+  "getConnections changed after connections closed" in {
+    val wscs = (1 to 10).map(_ => mkDexWsConnection(dex1))
+    dex1.api.waitForWsConnections(_.connections == 10)
+
+    wscs.take(3).foreach(_.close())
+    dex1.api.waitForWsConnections(_.connections == 7)
+
+    Thread.sleep(5000)
+
+    wscs.drop(3).foreach(_.close())
+  }
+
   "closeConnection closes N oldest connections" in {
     val wscs = (1 to 10).map(_ => mkDexWsConnection(dex1))
     dex1.api.waitForWsConnections(_.connections == 10)

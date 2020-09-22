@@ -2,7 +2,7 @@ package com.wavesplatform.dex.api.ws.actors
 
 import akka.actor.Cancellable
 import akka.actor.typed.scaladsl.Behaviors
-import akka.actor.typed.{ActorRef, Behavior}
+import akka.actor.typed.{ActorRef, Behavior, PostStop}
 import akka.{actor => classic}
 import cats.syntax.option._
 import com.wavesplatform.dex.actors.MatcherActor
@@ -67,6 +67,10 @@ object WsExternalClientHandlerActor {
       import settings.subscriptions._
 
       context.setLoggerName(s"WsExternalHandlerActor[c=${clientRef.path.name}]")
+
+      import akka.actor.typed.scaladsl.adapter._
+      val watchedActors = List(clientRef, matcherRef.toTyped[Any], addressRef.toTyped[Any]) // TODO
+      //watchedActors.foreach(context.watch)
 
       def matcherTime: Long = time.getTimestamp()
 
@@ -150,7 +154,7 @@ object WsExternalClientHandlerActor {
                     assetPairBuilder.validateAssetPair(subscribe.key).value.onComplete {
                       case Success(Left(e))  => clientRef ! WsError.from(e, matcherTime)
                       case Success(Right(_)) => self ! Event.AssetPairValidated(subscribe.key)
-                      case Failure(e)        => clientRef ! WsError.from(error.WavesNodeConnectionBroken, matcherTime)
+                      case Failure(_)        => clientRef ! WsError.from(error.WavesNodeConnectionBroken, matcherTime)
                     }
                   }
                   Behaviors.same
@@ -279,6 +283,11 @@ object WsExternalClientHandlerActor {
 
               cancelSchedules(nextPing, pongTimeout)
               Behaviors.stopped
+          }
+          .receiveSignal {
+            case (_, PostStop) =>
+              context.log.info("I'am terminating")
+              Behaviors.same
           }
       }
 
