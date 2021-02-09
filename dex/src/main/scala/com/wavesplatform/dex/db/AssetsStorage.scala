@@ -1,50 +1,57 @@
 package com.wavesplatform.dex.db
 
-import java.util.concurrent.ConcurrentHashMap
-
-import com.wavesplatform.dex.db.leveldb.DBExt
+import cats.syntax.applicative._
+import cats.syntax.functor._
+import cats.{Applicative, Functor}
+import com.wavesplatform.dex.db.leveldb.LevelDb
 import com.wavesplatform.dex.domain.asset.Asset
 import com.wavesplatform.dex.domain.asset.Asset.IssuedAsset
 import com.wavesplatform.dex.grpc.integration.dto.BriefAssetDescription
-import org.iq80.leveldb.DB
 
-trait AssetsStorage {
-  def put(asset: IssuedAsset, item: BriefAssetDescription): Unit
-  def get(asset: IssuedAsset): Option[BriefAssetDescription]
-  def contains(asset: IssuedAsset): Boolean = get(asset).nonEmpty
+import java.util.concurrent.ConcurrentHashMap
+
+trait AssetsStorage[F[_]] {
+  def put(asset: IssuedAsset, item: BriefAssetDescription): F[Unit]
+  def get(asset: IssuedAsset): F[Option[BriefAssetDescription]]
 }
 
 object AssetsStorage {
 
-  def cache(inner: AssetsStorage): AssetsStorage = new AssetsStorage {
+  def cache[F[_]: Applicative](inner: AssetsStorage[F]): AssetsStorage[F] = new AssetsStorage[F] {
 
     private val assetsCache = new ConcurrentHashMap[Asset, BriefAssetDescription]
 
-    def put(asset: Asset.IssuedAsset, item: BriefAssetDescription): Unit = {
-      inner.put(asset, item)
-      assetsCache.putIfAbsent(asset, item)
-    }
+    // We don't check assetCache here before put, because it is a responsibility of a user.
+    def put(asset: Asset.IssuedAsset, item: BriefAssetDescription): F[Unit] =
+      inner.put(asset, item).map { r =>
+        assetsCache.putIfAbsent(asset, item)
+        r
+      }
 
-    def get(asset: Asset.IssuedAsset): Option[BriefAssetDescription] = Option {
-      assetsCache.computeIfAbsent(asset, inner.get(_).orNull)
-    }
+    def get(asset: Asset.IssuedAsset): F[Option[BriefAssetDescription]] =
+      Option(assetsCache.get(asset)) match {
+        case None =>
+        case x =>
+      }
+      Option {
+        assetsCache.computeIfAbsent(asset, inner.get(_).orNull)
+      }
 
-    override def contains(asset: IssuedAsset): Boolean = assetsCache.contains(asset)
   }
 
-  def levelDB(db: DB): AssetsStorage = new AssetsStorage {
-    def put(asset: IssuedAsset, record: BriefAssetDescription): Unit = db.readWrite(_.put(DbKeys.asset(asset), Some(record)))
-    def get(asset: IssuedAsset): Option[BriefAssetDescription] = db.readOnly(_.get(DbKeys.asset(asset)))
+  def levelDB[F[_]](levelDb: LevelDb[F]): AssetsStorage[F] = new AssetsStorage[F] {
+    def put(asset: IssuedAsset, record: BriefAssetDescription): F[Unit] = levelDb.readWrite(_.put(DbKeys.asset(asset), Some(record)))
+    def get(asset: IssuedAsset): F[Option[BriefAssetDescription]] = levelDb.readOnly(_.get(DbKeys.asset(asset)))
   }
 
-  def inMem: AssetsStorage = new AssetsStorage {
+  def inMem[F[_]: Applicative]: AssetsStorage[F] = new AssetsStorage[F] {
     private val assetsCache = new ConcurrentHashMap[Asset, BriefAssetDescription]
-    def put(asset: IssuedAsset, item: BriefAssetDescription): Unit = assetsCache.putIfAbsent(asset, item)
-    def get(asset: IssuedAsset): Option[BriefAssetDescription] = Option(assetsCache get asset)
+    def put(asset: IssuedAsset, item: BriefAssetDescription): F[Unit] = assetsCache.putIfAbsent(asset, item).pure[F].as(())
+    def get(asset: IssuedAsset): F[Option[BriefAssetDescription]] = Option(assetsCache get asset).pure[F]
   }
 
-  implicit final class Ops(val self: AssetsStorage) extends AnyVal {
-
+  implicit final class Ops[F[_]: Functor](val self: AssetsStorage[F]) extends AnyVal {
+    def contains(asset: IssuedAsset): F[Boolean] = self.get(asset).map(_.nonEmpty)
     def get(asset: Asset): Option[BriefAssetDescription] = asset.fold(BriefAssetDescription.someWavesDescription)(self.get)
 
     def unsafeGet(asset: Asset): BriefAssetDescription =

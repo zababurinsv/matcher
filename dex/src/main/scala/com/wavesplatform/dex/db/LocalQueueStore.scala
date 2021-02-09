@@ -5,7 +5,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 import com.google.common.primitives.{Longs, Shorts}
 import com.wavesplatform.dex.db.DbKeys._
-import com.wavesplatform.dex.db.leveldb.{DBExt, ReadOnlyDB}
+import com.wavesplatform.dex.db.leveldb.{DBExt, ReadOnlyDb}
 import com.wavesplatform.dex.queue.{ValidatedCommand, ValidatedCommandWithMeta}
 import org.iq80.leveldb.{DB, ReadOptions}
 
@@ -45,14 +45,14 @@ class LocalQueueStore(db: DB) {
         xs.result()
       }
     else
-      new ReadOnlyDB(db, new ReadOptions())
+      new ReadOnlyDb(db, new ReadOptions())
         .read(LqElementKeyName, LqElementPrefixBytes, lpqElement(math.max(offset, 0)).keyBytes, Int.MaxValue) { e =>
           val offset = Longs.fromByteArray(e.getKey.slice(Shorts.BYTES, Shorts.BYTES + Longs.BYTES))
           lpqElement(offset).parse(e.getValue).getOrElse(throw new RuntimeException(s"Can't find a queue event at $offset"))
         }
 
   def oldestOffset: Option[ValidatedCommandWithMeta.Offset] =
-    new ReadOnlyDB(db, new ReadOptions())
+    new ReadOnlyDb(db, new ReadOptions())
       .read(LqElementKeyName, LqElementPrefixBytes, lpqElement(0).keyBytes, 1) { e =>
         Longs.fromByteArray(e.getKey.slice(Shorts.BYTES, Shorts.BYTES + Longs.BYTES))
       }

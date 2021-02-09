@@ -122,7 +122,12 @@ class MatcherActor(
           s ! OrderBookUnavailable(error.OrderBookUnexpectedState(assetPair))
         } else if (autoCreate) {
           val ob = createOrderBook(assetPair)
-          assetPairsDB.add(assetPair)
+          assetPairsDB
+            .add(assetPair)
+            .onComplete {
+              case Failure(e) => log.error(s"Can't save $assetPair", e)
+              case _ =>
+            }
           f(s, ob)
         } else {
           log.warn(s"OrderBook for $assetPair is stopped and autoCreate is $autoCreate, respond to client with OrderBookUnavailable")
@@ -160,7 +165,12 @@ class MatcherActor(
             orderBooks.getAndUpdate(_.filterNot(_._2.exists(_ == ref)))
             snapshotsState = snapshotsState.without(assetPair)
             tradedPairs -= assetPair
-            assetPairsDB.remove(assetPair)
+            assetPairsDB
+              .remove(assetPair)
+              .onComplete {
+                case Failure(e) => log.error(s"Can't remove $assetPair", e)
+                case _ =>
+              }
           }
 
         case _ => runFor(request.command.assetPair)((sender, orderBook) => orderBook.tell(request, sender))
