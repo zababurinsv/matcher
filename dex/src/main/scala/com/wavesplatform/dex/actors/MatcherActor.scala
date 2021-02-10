@@ -86,7 +86,6 @@ class MatcherActor(
   private def getAssetDesc(asset: Asset): Option[BriefAssetDescription] = asset.fold[Option[BriefAssetDescription]](None)(assetDescription)
 
   private def createMarketData(pair: AssetPair): MarketData = {
-
     val amountAssetDescription = getAssetDesc(pair.amountAsset)
     val priceAssetDescription = getAssetDesc(pair.priceAsset)
 

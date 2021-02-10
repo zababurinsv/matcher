@@ -2,6 +2,7 @@ package com.wavesplatform.dex.grpc.integration.clients
 
 import cats.instances.future._
 import cats.syntax.apply._
+import cats.syntax.either._
 import com.wavesplatform.dex.db.AssetsStorage
 import com.wavesplatform.dex.domain.account.Address
 import com.wavesplatform.dex.domain.asset.Asset
@@ -19,7 +20,7 @@ import scala.concurrent.{ExecutionContext, Future}
 
 class MatcherExtensionAssetsWatchingClient(
   underlying: WavesBlockchainClient,
-  assetsStorage: AssetsStorage
+  assetsStorage: AssetsStorage[Future]
 )(implicit grpcExecutionContext: ExecutionContext)
     extends WavesBlockchainClient
     with ScorexLogging {
@@ -63,18 +64,20 @@ class MatcherExtensionAssetsWatchingClient(
   override def close(): Future[Unit] = underlying.close()
 
   private def saveAssetsDescription(assets: Set[Asset]): Future[Unit] =
-    Future.traverse(assets.iterator.collect { case asset: IssuedAsset if !assetsStorage.contains(asset) => asset })(saveAssetDescription).map(
-      _ => ()
-    )
-
-  private def saveAssetDescription(asset: IssuedAsset): Future[Unit] =
-    assetsStorage.get(asset) match {
-      case Some(_) => Future.unit
-      case None =>
-        assetDescription(asset).map {
-          case Some(x) => assetsStorage.put(asset, x)
-          case None => log.warn(s"Can't find the '$asset' asset in the blockchain")
-        }
-    }
+    assetsStorage
+      .contained(assets.collect { case asset: IssuedAsset => asset })
+      .flatMap { unknownAssets =>
+        Future
+          .sequence(unknownAssets.map(asset => assetDescription(asset).map((asset, _))))
+          .map { xs =>
+            val (notFound, found) = xs.partitionMap {
+              case (k, Some(v)) => (k -> v).asRight
+              case (k, None) => k.asLeft
+            }
+            log.warn(s"Can't find assets in the blockchain: ${notFound.mkString(", ")}")
+            assetsStorage.putAll(found.toMap)
+          }
+          .map(_ => ())
+      }
 
 }

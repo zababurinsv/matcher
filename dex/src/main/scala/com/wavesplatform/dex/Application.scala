@@ -11,6 +11,7 @@ import akka.util.Timeout
 import cats.data.EitherT
 import cats.instances.future.catsStdInstancesForFuture
 import cats.syntax.functor._
+import cats.syntax.either._
 import cats.syntax.option._
 import ch.qos.logback.classic.LoggerContext
 import com.typesafe.config._
@@ -116,7 +117,7 @@ class Application(settings: MatcherSettings, config: Config)(implicit val actorS
   private val assetPairsDB = AssetPairsDb.levelDb(asyncLevelDb)
   private val orderBookSnapshotDB = OrderBookSnapshotDB(db)
   private val orderDB = OrderDB(settings.orderDb, db)
-  private val assetsCache = AssetsStorage.cache(AssetsStorage.levelDB(db))
+  private val assetsCache = AssetsStorage.cache(AssetsStorage.levelDB(asyncLevelDb))
   private val rateCache = RateCache(db)
 
   implicit private val errorContext: ErrorFormatterContext = ErrorFormatterContext.fromOptional(assetsCache.get(_: Asset).map(_.decimals))
@@ -140,13 +141,13 @@ class Application(settings: MatcherSettings, config: Config)(implicit val actorS
   private val orderBookAskAdapter = new OrderBookAskAdapter(orderBooks, settings.actorResponseTimeout)
 
   private val orderBookHttpInfo =
-    new OrderBookHttpInfo(settings.orderBookHttp, orderBookAskAdapter, time, assetsCache.get(_).map(_.decimals))
+    new OrderBookHttpInfo(settings.orderBookHttp, orderBookAskAdapter, time, assetsCache.get(_).map(_.map(_.decimals)))
 
   private val transactionCreator = new ExchangeTransactionCreator(
     matcherKeyPair,
     settings.exchangeTxBaseFee,
     hasMatcherAccountScript,
-    assetsCache.unsafeGetHasScript
+    assetsCache.unsafeGetHasScript // Should be in the cache, because assets decimals are required during an order book creation
   )
 
   private val wavesBlockchainAsyncClient = new MatcherExtensionAssetsWatchingClient(
@@ -263,7 +264,8 @@ class Application(settings: MatcherSettings, config: Config)(implicit val actorS
     }
 
     actorSystem.actorOf(
-      MatcherActor.props(
+      MatcherActor.
+        props(
         settings,
         assetPairsDB,
         {
@@ -309,8 +311,12 @@ class Application(settings: MatcherSettings, config: Config)(implicit val actorS
       matcherQueue.store,
       p => Option(orderBooks.get()) flatMap (_ get p),
       orderBookHttpInfo,
-      getActualTickSize = assetPair => {
-        matchingRulesCache.getDenormalizedRuleForNextOrder(assetPair, lastProcessedOffset, assetsCache.unsafeGetDecimals).tickSize
+      getActualTickSize = { assetPair =>
+        assetsCache.unsafeGetDecimals(assetPair.amountAsset)
+          .zip(assetsCache.unsafeGetDecimals(assetPair.priceAsset))
+          .map { case (amountAssetDecimals, priceAssetDecimals) =>
+            matchingRulesCache.getDenormalizedRuleForNextOrder(assetPair, lastProcessedOffset, amountAssetDecimals, priceAssetDecimals).tickSize
+          }
       },
       orderValidation,
       settings,
@@ -509,29 +515,28 @@ class Application(settings: MatcherSettings, config: Config)(implicit val actorS
     p.future
   }
 
-  private def getAndCacheDecimals(assetsCache: AssetsStorage, blockchain: WavesBlockchainClient, asset: Asset): FutureResult[Int] =
+  private def getAndCacheDecimals(assetsCache: AssetsStorage[Future], blockchain: WavesBlockchainClient, asset: Asset): FutureResult[Int] =
     getAndCacheDescription(assetsCache, blockchain, asset).map(_.decimals)(catsStdInstancesForFuture)
 
   private def getAndCacheDescription(
-    assetsCache: AssetsStorage,
+    assetsCache: AssetsStorage[Future],
     blockchain: WavesBlockchainClient,
     asset: Asset
   ): FutureResult[BriefAssetDescription] =
     asset match {
       case Waves => wavesLifted
       case asset: IssuedAsset =>
-        assetsCache.get(asset) match {
+        EitherT(assetsCache.get(asset).map(_.asRight)).flatMap {
           case Some(x) => liftValueAsync[BriefAssetDescription](x)
           case None =>
             EitherT {
               blockchain
                 .assetDescription(asset)
-                .map {
-                  _.toRight[MatcherError](error.AssetNotFound(asset))
-                    .map { desc =>
-                      BriefAssetDescription(desc.name, desc.decimals, desc.hasScript).unsafeTap(assetsCache.put(asset, _))
-                    }
+                .flatMap {
+                  case Some(x) => assetsCache.put(asset, x).map(_ => x.asRight)
+                  case None => Future.successful(error.AssetNotFound(asset).asLeft)
                 }
+                .map(_.map(desc => BriefAssetDescription(desc.name, desc.decimals, desc.hasScript)))
             }
         }
     }
